@@ -280,7 +280,8 @@ class BaseGPTQModel(nn.Module):
     @torch.no_grad()
     def quantize(
         self,
-        calibration_dataset: Union[List[Dict[str, Union[List[int], torch.LongTensor]]], List[str], List[int]],
+        calibration_dataset: Union[List[Dict[str, Union[List[int], torch.LongTensor]]], List[str], List[int], str],
+        calibration_dataset_register = None,
         # Setting a fixed calibration_dataset_concat_size may improve the performance of the quantized model.
         calibration_dataset_concat_size: Optional[int] = None,
         batch_size: int = 1,
@@ -292,6 +293,8 @@ class BaseGPTQModel(nn.Module):
         buffered_fwd: bool = False,
         # torch/cuda GC is auto enabled to reduce vram usage: disable to for small models or you know there is no possibility of oom due to vram to accelerate quantization
         auto_gc: bool = True,
+        task_name: Optional[str] = None,
+        project_name: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         if self.quantized:
             raise EnvironmentError("quantize() is called a model that is already quantized")
@@ -309,9 +312,6 @@ class BaseGPTQModel(nn.Module):
                 "FORMAT.MARLIN is deprecated for quantization. Please switch to FORMAT.GPTQ. GPTQMOdel will auto-use Marlin kernel for accelerated inference for FORMAT.GPTQ."
             )
 
-        if len(calibration_dataset) == 0:
-            raise ValueError("Calibration dataset must not be empty.")
-
         if logger_board == "clearml":
             try:
                 from clearml import Task
@@ -323,7 +323,21 @@ class BaseGPTQModel(nn.Module):
                     "The logger_board is set to 'clearml', but required dependencies are missing. "
                     "Please install them by running: pip install gptqmodel[logger]"
                 )
-            task = Task.init(project_name='GPTQModel', task_name=f'Experiment-{RandomWords().get_random_word()}', task_type=Task.TaskTypes.optimizer)
+            task = Task.init(
+                project_name='GPTQModel' if project_name is None else project_name, 
+                task_name=f'Experiment-{RandomWords().get_random_word()}' if task_name is None else task_name, 
+                task_type=Task.TaskTypes.optimizer
+            )
+
+            parameters = self.quantize_config.to_dict()
+
+            parameters["batch_size"] = batch_size
+            parameters["backend"] = backend
+
+            if isinstance(calibration_dataset, str):
+                parameters["calibration_dataset"] = calibration_dataset
+
+            task.connect(parameters, name = "Quantization Config")
         else:
             task = None
 
@@ -349,18 +363,107 @@ class BaseGPTQModel(nn.Module):
                 raise ValueError(
                     f"Unsupported `tokenizer` type: Expected `PreTrainedTokenizerBase`, actual = `{type(tokenizer)}`.")
 
-        min_calibration_dataset_size = 256
-        min_calibration_dataset_input_ids_avg_length = 256
-
-        if len(calibration_dataset) < min_calibration_dataset_size:
-            logger.warning(f"Calibration dataset size should be more than {min_calibration_dataset_size}. "
-                           f"Current: {len(calibration_dataset)}.")
-
         if self.quantize_config.format == FORMAT.BITBLAS:
             from ..nn_modules.qlinear.bitblas import BITBLAS_AVAILABLE, BITBLAS_INSTALL_HINT
             if BITBLAS_AVAILABLE is False:
                 raise ValueError(BITBLAS_INSTALL_HINT)
 
+        if self.quantize_config.lm_head:
+            if self.model.config.tie_word_embeddings and hasattr(self.model.model, "_tied_weights_keys"):
+                tied_keys = self.model._tied_weights_keys
+                for item in tied_keys:
+                    if self.lm_head in item:
+                        raise NotImplementedError("quantizing lm_head with tied weights has not been supported "
+                                                  "currently")
+
+        if isinstance(self.quantize_config, AutoRoundQuantizeConfig):
+
+            if not isinstance(calibration_dataset, str):
+                raise ValueError("AutoRound quantization requires `calibration_dataset` to be a string and `calibration_dataset_register` to be provided.")
+            
+            if calibration_dataset_register is None:
+                raise ValueError("If `calibration_dataset` is a string, `calibration_dataset_register` must be provided.")
+        
+            from auto_round import AutoRound
+            from auto_round import __version__ as auto_round_version
+
+            if version.parse(auto_round_version) < version.parse("0.3.0"):
+                raise ValueError(f"AutoRound version must be >= 0.3.0: actual = {auto_round_version}")
+
+            if self.quantize_config.lm_head:
+                self.quantize_config.layer_config[self.lm_head] = {"bits": self.quantize_config.bits}
+
+            from auto_round.calib_dataset import register_dataset
+            register_dataset(calibration_dataset)(calibration_dataset_register)
+
+            self.quantize_config.batch_size = batch_size
+
+            self.autoround = AutoRound(self.model,
+                                       tokenizer=self.tokenizer,
+                                       bits=self.quantize_config.bits,
+                                       group_size=self.quantize_config.group_size,
+                                       sym=self.quantize_config.sym, 
+                                       batch_size=batch_size, 
+                                       nsamples=self.quantize_config.nsamples,
+                                       dataset=calibration_dataset, 
+                                       seqlen=self.quantize_config.seqlen, 
+                                       nblocks=self.quantize_config.nblocks,
+                                       iters=self.quantize_config.iters, 
+                                       lr=self.quantize_config.lr,
+                                       minmax_lr=self.quantize_config.minmax_lr,
+                                       enable_quanted_input=self.quantize_config.enable_quanted_input,
+                                       device=self.quantize_config.device.value,
+                                       amp=self.quantize_config.amp,
+                                       low_gpu_mem_usage=self.quantize_config.low_gpu_mem_usage,
+                                       seed=self.quantize_config.seed,
+                                       gradient_accumulate_steps=self.quantize_config.gradient_accumulate_steps,
+                                       scale_dtype=self.quantize_config.scale_dtype, layer_config=self.quantize_config.layer_config,
+                                       enable_minmax_tuning=self.quantize_config.enable_minmax_tuning,
+                                       enable_torch_compile=self.quantize_config.enable_torch_compile,
+                                       task=task)
+
+            with torch.enable_grad():
+                model, layer_config = self.autoround.quantize()
+
+            quantizers = {}
+            for key in layer_config:
+                info = layer_config[key]
+                if not check_to_quantized(info):
+                    continue
+                quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), None)
+
+            self.qlinear_kernel = pack_model(
+                model=model,
+                quantizers=quantizers,
+                bits=self.quantize_config.bits,
+                dynamic=self.quantize_config.dynamic,
+                group_size=self.quantize_config.group_size,
+                backend=backend,
+                desc_act=self.quantize_config.desc_act,
+                format=self.quantize_config.format,
+                lm_head_name=self.lm_head,
+                parallel_packing=self.quantize_config.parallel_packing,
+                pack_dtype=self.quantize_config.pack_dtype
+            )
+
+            self.model = model            
+            self.quantized = True
+
+            if auto_gc:
+                torch_empty_cache()
+
+            task.close()
+            return
+
+        if len(calibration_dataset) == 0:
+            raise ValueError("Calibration dataset must not be empty.")
+        
+        min_calibration_dataset_size = 256
+        min_calibration_dataset_input_ids_avg_length = 256
+        if len(calibration_dataset) < min_calibration_dataset_size:
+            logger.warning(f"Calibration dataset size should be more than {min_calibration_dataset_size}. "
+                           f"Current: {len(calibration_dataset)}.")
+        
         calibration_dataset = self.prepare_dataset(calibration_dataset=calibration_dataset,
                                                    calibration_dataset_concat_size=calibration_dataset_concat_size,
                                                    batch_size=batch_size)
@@ -389,100 +492,7 @@ class BaseGPTQModel(nn.Module):
             logger.warning(f"The average length of input_ids of calibration_dataset should be greater than "
                            f"{min_calibration_dataset_input_ids_avg_length}: actual avg: {avg}.")
 
-        if isinstance(self.quantize_config, AutoRoundQuantizeConfig):
-            from auto_round import AutoRound
-            from auto_round import __version__ as auto_round_version
-
-            if version.parse(auto_round_version) < version.parse("0.3.0"):
-                raise ValueError(f"AutoRound version must be >= 0.3.0: actual = {auto_round_version}")
-
-            if self.quantize_config.lm_head:
-                self.quantize_config.layer_config[self.lm_head] = {"data_type": "int"}
-
-            import torch.nn.functional as F
-            from torch.utils.data import DataLoader
-
-            # set the nsamples/seqlen according to the actual size of the calibration_dataset.
-            nsamples = len(calibration_dataset)
-            seqlen = max_input_id_length
-
-            @torch.no_grad()
-            def collate_batch(batch):
-                input_ids_new = []
-                attention_mask_new = []
-                for text in batch:
-                    input_ids, attention_mask = text["input_ids"][0], text["attention_mask"][0]
-
-                    input_ids = input_ids[:seqlen]
-                    input_ids_new.append(input_ids)
-
-                    attention_mask = attention_mask[:seqlen]
-                    attention_mask_new.append(attention_mask)
-
-                if len(input_ids_new) == 0:
-                    return None
-
-                input_ids_new = [F.pad(t, (0, seqlen - t.size(0))) for t in input_ids_new]
-                attention_mask_new = [F.pad(t, (0, seqlen - t.size(0))) for t in attention_mask_new]
-
-                input_ids_new = torch.vstack(input_ids_new)
-                attention_mask_new = torch.vstack(attention_mask_new)
-                res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
-                return res
-
-            dataloader = DataLoader(calibration_dataset, collate_fn=collate_batch, shuffle=False, batch_size=nsamples)
-
-            self.autoround = AutoRound(self.model,
-                                       tokenizer=None,
-                                       bits=self.quantize_config.bits,
-                                       group_size=self.quantize_config.group_size,
-                                       sym=self.quantize_config.sym, batch_size=batch_size, n_samples=nsamples,
-                                       dataset=dataloader, seqlen=seqlen, nblocks=self.quantize_config.nblocks,
-                                       iters=self.quantize_config.iters, lr=self.quantize_config.lr,
-                                       minmax_lr=self.quantize_config.minmax_lr,
-                                       enable_quanted_input=self.quantize_config.enable_quanted_input,
-                                       device=self.device,
-                                       amp=self.quantize_config.amp,
-                                       low_gpu_mem_usage=self.quantize_config.low_gpu_mem_usage,
-                                       seed=self.quantize_config.seed,
-                                       gradient_accumulate_steps=self.quantize_config.gradient_accumulate_steps,
-                                       scale_dtype=self.quantize_config.scale_dtype, layer_config=self.quantize_config.layer_config,
-                                       enable_minmax_tuning=self.quantize_config.enable_minmax_tuning)
-
-            model, _ = self.autoround.quantize()
-
-            quantizers = {}
-            for key in self.autoround.layer_config:
-                info = self.autoround.layer_config[key]
-                if not check_to_quantized(info):
-                    continue
-                quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), None)
-
-            self.qlinear_kernel = pack_model(
-                model=self.model,
-                quantizers=quantizers,
-                bits=self.quantize_config.bits,
-                dynamic=self.quantize_config.dynamic,
-                group_size=self.quantize_config.group_size,
-                backend=backend,
-                desc_act=self.quantize_config.desc_act,
-                format=self.quantize_config.format,
-                lm_head_name=self.lm_head,
-                parallel_packing=self.quantize_config.parallel_packing,
-            )
-
-            self.model = model
-            self.quantized = True
-            return
-
         if self.quantize_config.lm_head:
-            if self.model.config.tie_word_embeddings and hasattr(self.model.model, "_tied_weights_keys"):
-                tied_keys = self.model._tied_weights_keys
-                for item in tied_keys:
-                    if self.lm_head in item:
-                        raise NotImplementedError("quantizing lm_head with tied weights has not been supported "
-                                                  "currently")
-
             lm_head_module = get_module(self.model, key=self.lm_head)
             if get_module(self.model, key=self.lm_head) is None:
                 raise ValueError(f"could not find layer {self.lm_head} in the model, exit...")
@@ -496,7 +506,7 @@ class BaseGPTQModel(nn.Module):
                 self.quantize_config.dynamic = {self.lm_head: lm_head_quant_config}
             elif self.quantize_config.dynamic_get(self.lm_head, default_value=None) is None:
                 self.quantize_config.dynamic[self.lm_head] = lm_head_quant_config
-
+        
         forward_pass_use_cache = self.model.config.use_cache if hasattr(self.model.config, "use_cache") else False
         self.model.config.use_cache = False
 
@@ -910,6 +920,8 @@ class BaseGPTQModel(nn.Module):
         if auto_gc:
             torch_empty_cache()
 
+        task.close()
+        
         return self.quant_log
 
     def to(self, device: Union[str, torch.device]):

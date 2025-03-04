@@ -49,8 +49,10 @@ if TORCH_CUDA_ARCH_LIST:
         os.environ["TORCH_CUDA_ARCH_LIST"] = arch_list
         print(f"TORCH_CUDA_ARCH_LIST has been updated to '{arch_list}'")
 
-version_vars = {}
-exec("exec(open('gptqmodel/version.py').read()); version=__version__", {}, version_vars)
+version_vars = {
+    'version': "1.9.0"
+}
+# exec("exec(open('gptqmodel/version.py').read()); version=__version__", {}, version_vars)
 gptqmodel_version = version_vars['version']
 
 BASE_WHEEL_URL = (
@@ -58,11 +60,6 @@ BASE_WHEEL_URL = (
 )
 
 BUILD_CUDA_EXT = sys.platform != "darwin"
-
-if os.environ.get("GPTQMODEL_FORCE_BUILD", None):
-    FORCE_BUILD = True
-else:
-    FORCE_BUILD = False
 
 extensions = []
 common_setup_kwargs = {
@@ -140,11 +137,7 @@ if TORCH_CUDA_ARCH_LIST is None:
 
         if sys.platform == "win32" and 'cu+' not in torch.__version__:
             print("No CUDA device detected: avoid installing torch from PyPi which may not have bundle CUDA support for Windows.\nInstall via PyTorch: `https://pytorch.org/get-started/locally/`")
-
-    # if cuda compute is < 8.0, always force build since we only compile cached wheels for >= 8.0
-    if BUILD_CUDA_EXT and not FORCE_BUILD:
-        if got_cuda_between_v6_and_v8:
-            FORCE_BUILD = True
+            
 else:
     HAS_CUDA_V8 = not ROCM_VERSION and len([arch for arch in TORCH_CUDA_ARCH_LIST.split() if float(arch.split('+')[0]) >= 8]) > 0
 
@@ -202,7 +195,7 @@ if BUILD_CUDA_EXT:
     if not ROCM_VERSION:
         extra_compile_args["nvcc"] += [
             "--threads",
-            "4",
+            "12",
             "-Xfatbin",
             "-compress-all",
             "--expt-relaxed-constexpr",
@@ -277,38 +270,6 @@ if BUILD_CUDA_EXT:
 
     additional_setup_kwargs = {"ext_modules": extensions, "cmdclass": {"build_ext": cpp_ext.BuildExtension}}
 
-
-class CachedWheelsCommand(_bdist_wheel):
-    def run(self):
-        if FORCE_BUILD or torch.xpu.is_available():
-            return super().run()
-
-        python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
-
-        wheel_filename = f"{common_setup_kwargs['name']}-{gptqmodel_version}+{get_version_tag()}-{python_version}-{python_version}-linux_x86_64.whl"
-
-        wheel_url = BASE_WHEEL_URL.format(tag_name=f"v{gptqmodel_version}", wheel_name=wheel_filename)
-        print(f"Guessing wheel URL: {wheel_url}\nwheel name={wheel_filename}")
-
-        try:
-            urllib.request.urlretrieve(wheel_url, wheel_filename)
-
-            if not os.path.exists(self.dist_dir):
-                os.makedirs(self.dist_dir)
-
-            impl_tag, abi_tag, plat_tag = self.get_tag()
-            archive_basename = f"{common_setup_kwargs['name']}-{gptqmodel_version}+{get_version_tag()}-{impl_tag}-{abi_tag}-{plat_tag}"
-
-            wheel_path = os.path.join(self.dist_dir, archive_basename + ".whl")
-            print("Raw wheel path", wheel_path)
-
-            os.rename(wheel_filename, wheel_path)
-        except BaseException:
-            print(f"Precompiled wheel not found in url: {wheel_url}. Building from source...")
-            # If the wheel could not be downloaded, build from source
-            super().run()
-
-
 setup(
     packages=find_packages(),
     install_requires=requirements,
@@ -329,12 +290,7 @@ setup(
     },
     include_dirs=include_dirs,
     python_requires=">=3.9.0",
-    cmdclass={"bdist_wheel": CachedWheelsCommand, "build_ext": cpp_ext.BuildExtension}
-    if BUILD_CUDA_EXT
-    else {
-        "bdist_wheel": CachedWheelsCommand,
-    },
-    ext_modules=extensions,
     license="Apache 2.0",
-    **common_setup_kwargs
+    **common_setup_kwargs,
+    **additional_setup_kwargs
 )

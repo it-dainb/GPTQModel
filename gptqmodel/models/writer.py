@@ -34,7 +34,7 @@ from transformers.modeling_utils import no_init_weights
 from transformers.models.auto.tokenization_auto import get_tokenizer_config
 from transformers.utils.generic import ContextManagers
 
-from ..quantization.config import (FORMAT, META_FIELD_DAMP_AUTO_INCREMENT, META_FIELD_DAMP_PERCENT, META_FIELD_MSE,
+from ..quantization.config import (FORMAT, QUANT_METHOD, META_FIELD_DAMP_AUTO_INCREMENT, META_FIELD_DAMP_PERCENT, META_FIELD_MSE,
                                    META_FIELD_QUANTIZER, META_FIELD_STATIC_GROUPS, META_FIELD_TRUE_SEQUENTIAL,
                                    META_FIELD_URI, META_QUANTIZER_GPTQMODEL, META_VALUE_URI, MIN_VERSION_WITH_V2)
 from ..utils.backend import BACKEND
@@ -88,6 +88,12 @@ def ModelWriter(cls):
         pre_quantized_size_gb = pre_quantized_size_mb / 1024
 
         quantizers = [f"{META_QUANTIZER_GPTQMODEL}:{__version__}"]
+
+        if self.quantize_config.quant_method == QUANT_METHOD.AUTO_ROUND:
+            from auto_round import __version__ as auto_round_version
+
+            quantizers.append(f"auto_round:{auto_round_version}")
+        
         if meta_quantizer:
             if len(meta_quantizer.split(":")) == 2:
                 quantizers.append(meta_quantizer.replace(" ",""))

@@ -485,8 +485,7 @@ def ModelLoader(cls):
             load_checkpoint_in_model = False
             qcfg.runtime_format = FORMAT.GPTQ_V2
 
-        if backend == BACKEND.MARLIN and (
-                preload_qlinear_kernel == ExllamaV2QuantLinear or qcfg.format == FORMAT.MARLIN):
+        if backend == BACKEND.MARLIN and (preload_qlinear_kernel == ExllamaV2QuantLinear or qcfg.format == FORMAT.MARLIN):
             if is_sharded:
                 raise ValueError(
                     "The loading of sharded checkpoints with Marlin is currently not supported."
@@ -495,6 +494,8 @@ def ModelLoader(cls):
                 raise ValueError(
                     f'Marlin kernel does not support this gpu with compute capability of `{torch.cuda.get_device_capability()}`. Please do not use `back=BACKEND.MARLIN`.'
                 )
+
+            logger.info("Loading model with Marlin kernel.")
 
             # Validate the model can run in Marlin.
             if torch_dtype != torch.float16:
@@ -575,7 +576,6 @@ def ModelLoader(cls):
 
         # Any post-initialization that require device information, for example buffers initialization on device.
         model = gptqmodel_post_init(model, use_act_order=qcfg.desc_act, quantize_config=qcfg)
-
         model.eval()
 
         tokenizer = AutoTokenizer.from_pretrained(model_id_or_path, trust_remote_code=trust_remote_code)
@@ -603,7 +603,6 @@ def ModelLoader(cls):
                 model, _ = load(temp_dir)
 
                 cls.generate = lambda _, **kwargs: mlx_generate(model=model, tokenizer=tokenizer, **kwargs)
-
 
         return cls(
             model,

@@ -349,7 +349,7 @@ class QuantizeConfig():
                 "The quantization configuration does not contain an entry `sym` (symmetric quantization). "
                 "This may result in silent errors. Defaulting to `sym=True`."
             )
-
+            
         return cls(**normalized)
 
     @classmethod
@@ -419,8 +419,7 @@ class QuantizeConfig():
 @dataclass
 class AutoRoundQuantizeConfig(QuantizeConfig):
     layer_config: dict = field(default_factory=dict)
-    enable_full_range: bool = False  ##for symmetric, TODO support later
-    batch_size: int = 1
+    batch_size: int = -1
     amp: bool = True
     lr_scheduler = None
     enable_quanted_input: bool = True
@@ -438,11 +437,13 @@ class AutoRoundQuantizeConfig(QuantizeConfig):
     data_type: str = "int"  ##only support int for now
     scale_dtype: str = "fp16"
     quant_method: str = QUANT_METHOD.AUTO_ROUND
+    enable_torch_compile: bool = False
+    seqlen: int = 2048
+    nsamples: int = 128
 
     def to_dict(self):
         # inject auto-round specific meta data
-        self.meta_set("auto_round", pkg_version(PKG_AUTO_ROUND))
-        self.meta_set("enable_full_range", self.enable_full_range)
+        # self.meta_set("auto_round", pkg_version(PKG_AUTO_ROUND))
         layer_config = copy.deepcopy(self.layer_config)
         for key in layer_config:
             info = layer_config[key]
@@ -452,6 +453,8 @@ class AutoRoundQuantizeConfig(QuantizeConfig):
             info.pop("zp", None)
         self.meta_set("layer_config", layer_config)
         self.meta_set("batch_size", self.batch_size)
+        self.meta_set("seqlen", self.seqlen)
+        self.meta_set("nsamples", self.nsamples)
         self.meta_set("amp", self.amp)
         self.meta_set("lr_scheduler", self.lr_scheduler)
         self.meta_set("enable_quanted_input", self.enable_quanted_input)
@@ -468,6 +471,7 @@ class AutoRoundQuantizeConfig(QuantizeConfig):
         self.meta_set("dynamic_max_gap", self.dynamic_max_gap)
         self.meta_set("data_type", self.data_type)
         self.meta_set("scale_dtype", self.scale_dtype)
+        self.meta_set("enable_torch_compile", self.enable_torch_compile)
 
         r = super().to_dict()
 
