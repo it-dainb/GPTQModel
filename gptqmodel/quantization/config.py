@@ -176,6 +176,7 @@ class QuantizeConfig():
     # allowing using different dtypes used for packing quantized weights
     # affects [`qweights`, `qzeros`]
     pack_dtype: Optional[Union[str, torch.dtype]] = field(default=torch.int32)
+    process_batch: int = field(default=1000)
 
     def __post_init__(self):
         fields_info = fields(self)
@@ -427,6 +428,7 @@ class AutoRoundQuantizeConfig(QuantizeConfig):
     lr: float = None
     minmax_lr: float = None
     low_gpu_mem_usage: bool = False
+    low_cache_mem_usage: bool = False
     iters: int = 200
     sampler: str = "rand"
     seed: int = 42
@@ -440,7 +442,7 @@ class AutoRoundQuantizeConfig(QuantizeConfig):
     enable_torch_compile: bool = False
     seqlen: int = 2048
     nsamples: int = 128
-
+\
     def to_dict(self):
         # inject auto-round specific meta data
         # self.meta_set("auto_round", pkg_version(PKG_AUTO_ROUND))
@@ -462,6 +464,7 @@ class AutoRoundQuantizeConfig(QuantizeConfig):
         self.meta_set("lr", self.lr)
         self.meta_set("minmax_lr", self.minmax_lr)
         self.meta_set("low_gpu_mem_usage", self.low_gpu_mem_usage)
+        self.meta_set("low_cache_mem_usage", self.low_cache_mem_usage)
         self.meta_set("iters", self.iters)
         self.meta_set("sampler", self.sampler)
         self.meta_set("seed", self.seed)

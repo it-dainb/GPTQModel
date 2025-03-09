@@ -415,11 +415,13 @@ class BaseGPTQModel(nn.Module):
                                        device=self.quantize_config.device.value,
                                        amp=self.quantize_config.amp,
                                        low_gpu_mem_usage=self.quantize_config.low_gpu_mem_usage,
+                                       low_cache_mem_usage=self.quantize_config.low_cache_mem_usage,
                                        seed=self.quantize_config.seed,
                                        gradient_accumulate_steps=self.quantize_config.gradient_accumulate_steps,
                                        scale_dtype=self.quantize_config.scale_dtype, layer_config=self.quantize_config.layer_config,
                                        enable_minmax_tuning=self.quantize_config.enable_minmax_tuning,
                                        enable_torch_compile=self.quantize_config.enable_torch_compile,
+                                       process_batch=self.quantize_config.process_batch,
                                        task=task)
 
             with torch.enable_grad():

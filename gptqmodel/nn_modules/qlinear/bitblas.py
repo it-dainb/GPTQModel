@@ -23,7 +23,7 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
-from gptqmodel.nn_modules.qlinear import PackableQuantLinear
+from gptqmodel.nn_modules.qlinear import BaseQuantLinear
 
 from ...models._const import DEVICE, PLATFORM
 from ...utils.logger import setup_logger
@@ -82,7 +82,7 @@ def unpack_qzeros(qzeros, bits):
     return unpacked_zeros
 
 
-class BitBLASQuantLinear(PackableQuantLinear):
+class BitBLASQuantLinear(BaseQuantLinear):
     SUPPORTS_BITS = [1, 2, 4]
     SUPPORTS_GROUP_SIZE = [-1, 16, 32, 64, 128]
     SUPPORTS_DESC_ACT = [False]
