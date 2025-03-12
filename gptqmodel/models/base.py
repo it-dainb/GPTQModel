@@ -425,13 +425,13 @@ class BaseGPTQModel(nn.Module):
                                        task=task)
 
             with torch.enable_grad():
-                model, layer_config = self.autoround.quantize()
+                model, layer_config = self.autoround.quantize(dump_scale=True)
 
             quantizers = {}
-            for key in layer_config:
-                info = layer_config[key]
+            for key, info in layer_config.items():
                 if not check_to_quantized(info):
                     continue
+                
                 quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), None)
 
             self.qlinear_kernel = pack_model(

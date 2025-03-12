@@ -54,6 +54,7 @@ class TorchQuantLinear(PackableQuantLinear):
         out_features: int,
         bias: bool = False,
         pack_dtype: torch.dtype = torch.int32,
+        register_buffers=True,
         **kwargs,
     ):
         super().__init__(
@@ -65,7 +66,7 @@ class TorchQuantLinear(PackableQuantLinear):
             out_features=out_features,
             bias=bias,
             pack_dtype=pack_dtype,
-            register_buffers=True,
+            register_buffers=register_buffers,
             **kwargs)
 
         self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
