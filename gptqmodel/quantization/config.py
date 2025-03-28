@@ -442,7 +442,8 @@ class AutoRoundQuantizeConfig(QuantizeConfig):
     enable_torch_compile: bool = False
     seqlen: int = 2048
     nsamples: int = 128
-\
+    process_batch: int = 16
+
     def to_dict(self):
         # inject auto-round specific meta data
         # self.meta_set("auto_round", pkg_version(PKG_AUTO_ROUND))
